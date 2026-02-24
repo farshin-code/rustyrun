@@ -154,105 +154,105 @@ A userspace tool that tells the kernel:
 
 # Creating a Container Using Only Linux
 
-This demonstrates how Docker works under the hood.
+Here is a complete, step-by-step guide to building a Linux container from scratch using Alpine Linux. 
+
+This guide focuses on process isolation and filesystem setup (including proc and sys), without touching networking yet.
 
 ---
 
-## Step 1 — Create the Directory Structure
+### Step 1: Prepare the "Hard Drive" (Root Filesystem)
+A container cannot use your host computer's commands. It needs its own isolated set of files, folders, and binaries (like sh, ls, etc.). We will use Alpine Linux because it is incredibly small (about 3MB).
 
+**1. Create a folder for your container:**
 ```bash
-mkdir my-container-01
-mkdir my-container-01/rootfs   # container filesystem
-mkdir my-container-01/ns       # namespace references
+mkdir ~/my-container-01
+cd ~/my-container-01
 ```
+
+**2. Download and extract the Alpine "Mini Root Filesystem":**
+
+Download the alpine mini root filesystem from alpine website and extract it to my-container-01
+
+*If you type `ls` now, you will see standard Linux folders like `bin`, `etc`, `dev`, `proc`, `sys`, and `usr`. This is your container's entire world.*
 
 ---
 
-## Step 2 — Create New Namespaces
+### Step 2: Isolate and Enter the Container
+Now we use the `unshare` command to create Linux **Namespaces**. Namespaces are the kernel feature that hides the host computer from the container.
 
-Run a shell inside new namespaces:
-
+**Run this command to start your container:**
 ```bash
-sudo unshare \
-  --uts \
-  --pid \
-  --mount \
-  --net \
-  --ipc \
-  --fork \
-  --mount-proc \
-  bash
+sudo unshare --mount --uts --ipc --pid --fork --root ~/my-container-01 /bin/sh
 ```
 
-This gives the shell:
+**Explanation of what just happened:**
+* `--mount`: Creates a Mount Namespace. Any drives or filesystems we mount inside the container will *not* be seen by the host computer.
+* `--uts`: Creates a Hostname Namespace. This allows the container to have its own computer name.
+* `--ipc`: Creates an IPC Namespace. Prevents the container from talking directly to host processes via shared memory.
+* `--pid --fork`: Creates a Process ID Namespace. This makes your new sh shell become **PID 1** (the master process) inside the container. It cannot see the host's processes.
+* `--root`: Changes the root directory (`/`) to your Alpine folder. The container is now physically trapped in this folder.
 
-* Its own hostname
-* Its own process tree
-* Its own mount table
-* Its own network stack
-* Its own IPC space
-
-⚠️ At this point, the namespace exists **only while this shell is running**.
+*You are now inside the container! Your prompt will likely just be `/ #`.*
 
 ---
 
-## Step 3 — Make the Namespace Persistent
+### Step 3: Mount proc (The Process API)
+If you type `ps` right now, you will get an error or see nothing. That is because the proc folder is currently empty.
 
-Namespaces are exposed through:
+In Linux, proc is a "pseudo-filesystem". It doesn't exist on a hard drive; it is generated in RAM by the kernel to show running processes.
 
-```
-/proc/<PID>/ns/
-```
-
-### Find the PID from the host
-
-```bash
-ps -ef | grep -E 'unshare|bash' | grep -v grep
+**Run this command inside the container:**
+```sh
+mount -t proc proc /proc
 ```
 
-Example:
+**Explanation:**
+* `mount -t proc`: Tells the kernel to mount a filesystem of type `proc`.
+* `proc /proc`: Mounts it to the proc directory.
+* **Why it works:** Because you used `--pid` in Step 2, the kernel knows you are in an isolated PID namespace. When you mount proc, the kernel dynamically generates a *new* proc that only contains the processes running inside this specific container.
 
-```
-root 100007 bash   ← use this PID
-```
+*Test it: Type `ps`. You will now see sh running as PID 1!*
 
 ---
 
-### Create mount points
+### Step 4: Mount sys (The Hardware API)
+If you type `lsblk` (to list disks) or `ip link` (to list network cards), they will fail. The kernel exposes hardware information through the sys directory, which is currently empty.
 
-```bash
-sudo touch my-container-01/ns/{pid,mnt,uts,net,ipc}
+**Run these two commands inside the container:**
+```sh
+# 1. Mount the sysfs filesystem
+mount -t sysfs sys /sys
+
+# 2. Remount it as Read-Only (CRITICAL for security)
+mount -o remount,ro /sys
 ```
 
-### Bind the namespace handles
+**Explanation:**
+* `mount -t sysfs`: Tells the kernel to mount the hardware information filesystem.
+* **Why Read-Only (`ro`)?** sys allows you to change physical hardware settings (like turning off a CPU core or changing power limits). If a hacker breaks into your container, you do not want them modifying your host computer's hardware. Docker always mounts sys as read-only to prevent this.
 
-```bash
-sudo mount --bind /proc/100007/ns/pid my-container-01/ns/pid
-sudo mount --bind /proc/100007/ns/mnt my-container-01/ns/mnt
-sudo mount --bind /proc/100007/ns/uts my-container-01/ns/uts
-sudo mount --bind /proc/100007/ns/net my-container-01/ns/net
-sudo mount --bind /proc/100007/ns/ipc my-container-01/ns/ipc
-```
-
-Now:
-
-✅ The namespace stays alive
-✅ You can close the original shell
+*Test it: Type `ip link`. Even though we haven't set up networking yet, the command will now successfully run and show the default `lo` (loopback) interface.*
 
 ---
 
-## Step 4 — Re-enter the Container
+### Step 5: Test the Isolation
+You now have a fully functioning, isolated Linux container. Try these commands to prove it is isolated from your main computer:
 
-```bash
-sudo nsenter \
-  --uts=my-container-01/ns/uts \
-  --pid=my-container-01/ns/pid \
-  --mount=my-container-01/ns/mnt \
-  --net=my-container-01/ns/net \
-  --ipc=my-container-01/ns/ipc \
-  bash
+1. **Change the hostname:**
+   ```sh
+   hostname my-custom-container
+   ```
+   *(This changes the name inside the container, but your host computer's name remains untouched thanks to the `--uts` flag).*
+
+2. **Check your processes:**
+   ```sh
+   top
+   ```
+   *(You will only see `sh` and `top`. The hundreds of background processes running on your host computer are completely invisible).*
+
+### Step 6: Exit and Clean Up
+To destroy the container, simply type:
+```sh
+exit
 ```
-
-You are back inside the same isolated environment.
-
-
+Because the sh process was PID 1, exiting it kills the container. The kernel automatically destroys the namespaces, and because we used a Mount Namespace (`--mount`), the proc and sys mounts are automatically unmounted and cleaned up for you.
