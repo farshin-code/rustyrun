@@ -8,30 +8,23 @@ use std::process::Command;
 pub fn start(config: ContainerConfig) {
     println!("🚀 Host: Starting container process...");
 
-    // We use a trick here: we tell the current executable to run itself again,
-    // but we pass the "child" subcommand instead of "run".
-    // This allows us to execute our own Rust code inside the new namespaces.
     let mut child = Command::new("/proc/self/exe");
 
-    // Pass the arguments to the child process
+    // Pass the arguments to the `child` subcommand
     child.arg("child");
     child.arg("--rootfs").arg(&config.rootfs);
     child.arg("--command").arg(&config.command);
     child.arg("--hostname").arg(&config.hostname);
 
-    // This is the magic part: The pre_exec hook runs in the child process
-    // *after* it forks, but *before* it executes the new binary (/proc/self/exe).
-    // This is where we isolate the process from the host.
     unsafe {
         child.pre_exec(|| {
-            // Create new namespaces for Mount, UTS (hostname), IPC, and Network.
-            // Note: We are NOT creating a new PID namespace here yet, because
-            // unshare(CLONE_NEWPID) only applies to *children* of the calling process.
-            // We will handle PID isolation later when we upgrade to `clone`.
+            // Unshare everything INCLUDING the PID namespace.
+            // Remember: unshare(CLONE_NEWPID) only affects FUTURE children.
             let flags = CloneFlags::CLONE_NEWNS
                 | CloneFlags::CLONE_NEWUTS
                 | CloneFlags::CLONE_NEWIPC
-                | CloneFlags::CLONE_NEWNET;
+                | CloneFlags::CLONE_NEWNET
+                | CloneFlags::CLONE_NEWPID;
 
             if let Err(e) = unshare(flags) {
                 eprintln!("❌ Failed to unshare namespaces: {}", e);
@@ -41,34 +34,52 @@ pub fn start(config: ContainerConfig) {
         });
     }
 
-    // Spawn the child process and wait for it to finish
     let mut process = child.spawn().expect("❌ Failed to spawn child process");
     let status = process.wait().expect("❌ Failed to wait on child process");
 
     println!("🛑 Host: Container exited with status: {}", status);
 }
 
-/// The entry point for the child process.
-/// This function runs *inside* the newly created namespaces.
-pub fn init_child(config: ContainerConfig) {
-    println!("📦 Child: Initializing container environment...");
+/// The intermediate child process.
+/// This process is inside the new namespaces (UTS, Mount, etc.) but it is
+/// NOT in the new PID namespace yet because it just called unshare().
+/// It must spawn one more process (the Grandchild) to be PID 1.
+pub fn child(config: ContainerConfig) {
+    println!("👶 Child: Forking again to enter new PID namespace...");
+
+    let mut init = Command::new("/proc/self/exe");
+
+    // Pass the arguments to the `init` subcommand
+    init.arg("init");
+    init.arg("--rootfs").arg(&config.rootfs);
+    init.arg("--command").arg(&config.command);
+    init.arg("--hostname").arg(&config.hostname);
+
+    // We don't need any pre_exec hooks here because we are already unshared.
+    // The simple act of spawning creates a new process which will inherit
+    // all namespaces AND be placed into the new PID namespace.
+    let mut process = init.spawn().expect("❌ Failed to spawn init process");
+    let status = process.wait().expect("❌ Failed to wait on init process");
+
+    std::process::exit(status.code().unwrap_or(1));
+}
+
+/// The final Init process (PID 1 inside the container).
+/// This function finalizes the environment and executes the user's app.
+pub fn init(config: ContainerConfig) {
+    println!("📦 Init (PID 1): Finalizing container environment...");
 
     // 1. Set the hostname (UTS namespace)
     crate::namespaces::set_hostname(&config.hostname);
 
-    // 2. Set up the filesystem (Mount namespace)
+    // 2. Set up the filesystem (Mount namespace and /proc)
     crate::mounts::setup_rootfs(&config.rootfs);
 
     // 3. Execute the target command
-    println!("🚀 Child: Executing command: {}", config.command);
+    println!("🚀 Init (PID 1): Executing command: {}", config.command);
 
-    // We use CommandExt::exec() here. This is crucial!
-    // It completely replaces the current Rust process (rustyrun child)
-    // with the target program (e.g., /bin/sh).
-    // If exec() succeeds, it never returns.
     let err = Command::new(&config.command).exec();
 
-    // If we reach this line, exec() failed.
-    eprintln!("❌ Child: Failed to execute command: {}", err);
+    eprintln!("❌ Init: Failed to execute command: {}", err);
     std::process::exit(1);
 }

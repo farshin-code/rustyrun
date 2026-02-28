@@ -1,1 +1,6 @@
-target
+target/
+Cargo.lock
+
+# Ignore downloaded root filesystems to prevent bloating the git repository
+/root-file-systems/*
+!/root-file-systems/.gitkeep

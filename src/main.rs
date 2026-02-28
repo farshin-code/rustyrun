@@ -31,9 +31,21 @@ enum Commands {
         #[arg(long, default_value = "rustyrun-container")]
         hostname: String,
     },
-    /// Hidden command used internally to initialize the container environment
+    /// Hidden command used internally to set up namespaces
     #[command(hide = true)]
     Child {
+        #[arg(short, long)]
+        rootfs: PathBuf,
+
+        #[arg(short, long)]
+        command: String,
+
+        #[arg(long)]
+        hostname: String,
+    },
+    /// Hidden command used internally to be PID 1 in the new namespace
+    #[command(hide = true)]
+    Init {
         #[arg(short, long)]
         rootfs: PathBuf,
 
@@ -64,7 +76,15 @@ fn main() {
             hostname,
         } => {
             let config = ContainerConfig::new(rootfs, command, hostname);
-            container::init_child(config);
+            container::child(config);
+        }
+        Commands::Init {
+            rootfs,
+            command,
+            hostname,
+        } => {
+            let config = ContainerConfig::new(rootfs, command, hostname);
+            container::init(config);
         }
     }
 }
