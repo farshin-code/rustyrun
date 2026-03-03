@@ -1,3 +1,4 @@
+mod cgroups;
 mod config;
 mod container;
 mod mounts;
@@ -30,6 +31,10 @@ enum Commands {
         /// Hostname for the container
         #[arg(long, default_value = "rustyrun-container")]
         hostname: String,
+
+        /// Memory limit in Megabytes
+        #[arg(short, long)]
+        memory: Option<u64>,
     },
     /// Hidden command used internally to set up namespaces
     #[command(hide = true)]
@@ -65,8 +70,9 @@ fn main() {
             rootfs,
             command,
             hostname,
+            memory,
         } => {
-            let config = ContainerConfig::new(rootfs, command, hostname);
+            let config = ContainerConfig::new(rootfs, command, hostname, memory);
             println!("🚀 Starting rustyrun...");
             container::start(config);
         }
@@ -75,7 +81,7 @@ fn main() {
             command,
             hostname,
         } => {
-            let config = ContainerConfig::new(rootfs, command, hostname);
+            let config = ContainerConfig::new(rootfs, command, hostname, None);
             container::child(config);
         }
         Commands::Init {
@@ -83,7 +89,7 @@ fn main() {
             command,
             hostname,
         } => {
-            let config = ContainerConfig::new(rootfs, command, hostname);
+            let config = ContainerConfig::new(rootfs, command, hostname, None);
             container::init(config);
         }
     }

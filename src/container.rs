@@ -8,6 +8,15 @@ use std::process::Command;
 pub fn start(config: ContainerConfig) {
     println!("🚀 Host: Starting container process...");
 
+    // 1. Set up Cgroups for resource limitations
+    let cgroup = crate::cgroups::Cgroup::new(&config.hostname);
+    if let Some(limit_mb) = config.memory_mb {
+        cgroup.set_memory_limit(limit_mb);
+    }
+    
+    // We get the path so we can write to it from within the child's pre_exec hook
+    let cgroup_procs_path = cgroup.procs_path();
+
     let mut child = Command::new("/proc/self/exe");
 
     // Pass the arguments to the `child` subcommand
@@ -17,8 +26,17 @@ pub fn start(config: ContainerConfig) {
     child.arg("--hostname").arg(&config.hostname);
 
     unsafe {
-        child.pre_exec(|| {
-            // Unshare everything INCLUDING the PID namespace.
+        child.pre_exec(move || {
+            // A. Attach this process to the Cgroup BEFORE we unshare or fork.
+            // This guarantees that all children (like our `init` process) will
+            // inherit these resource limits automatically.
+            let pid = std::process::id();
+            if let Err(e) = std::fs::write(&cgroup_procs_path, pid.to_string()) {
+                eprintln!("❌ Failed to attach PID to cgroup: {}", e);
+                std::process::exit(1);
+            }
+
+            // B. Unshare everything INCLUDING the PID namespace.
             // Remember: unshare(CLONE_NEWPID) only affects FUTURE children.
             let flags = CloneFlags::CLONE_NEWNS
                 | CloneFlags::CLONE_NEWUTS
@@ -36,6 +54,9 @@ pub fn start(config: ContainerConfig) {
 
     let mut process = child.spawn().expect("❌ Failed to spawn child process");
     let status = process.wait().expect("❌ Failed to wait on child process");
+
+    // 2. Clean up Cgroups
+    cgroup.clean();
 
     println!("🛑 Host: Container exited with status: {}", status);
 }
