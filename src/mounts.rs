@@ -68,15 +68,17 @@ pub fn setup_rootfs(rootfs: &Path) {
         std::process::exit(1);
     }
 
-    // 8. Mount the proc pseudo-filesystem
+    // 8. Mount pseudo-filesystems (/proc, /sys, /dev)
+    mount_pseudo_filesystems();
+}
+
+/// Mounts essential Linux pseudo-filesystems inside the container.
+fn mount_pseudo_filesystems() {
+    // --- Mount /proc ---
     let proc_path = Path::new("/proc");
     if !proc_path.exists() {
-        if let Err(e) = fs::create_dir_all(proc_path) {
-            eprintln!("❌ Failed to create /proc directory: {}", e);
-            std::process::exit(1);
-        }
+        let _ = fs::create_dir_all(proc_path);
     }
-
     if let Err(e) = mount(
         Some("proc"),
         proc_path,
@@ -87,5 +89,44 @@ pub fn setup_rootfs(rootfs: &Path) {
         eprintln!("❌ Failed to mount /proc: {}", e);
         std::process::exit(1);
     }
+
+    // --- Mount /sys ---
+    // /sys is mounted read-only for security, just like Docker does it.
+    let sys_path = Path::new("/sys");
+    if !sys_path.exists() {
+        let _ = fs::create_dir_all(sys_path);
+    }
+    if let Err(e) = mount(
+        Some("sysfs"),
+        sys_path,
+        Some("sysfs"),
+        MsFlags::MS_RDONLY | MsFlags::MS_NOSUID | MsFlags::MS_NOEXEC | MsFlags::MS_NODEV,
+        None::<&str>,
+    ) {
+        eprintln!("❌ Failed to mount /sys: {}", e);
+        // We don't exit here, as some minimal containers can survive without /sys
+    }
+
+    // --- Mount /dev (tmpfs) ---
+    // A tmpfs is an in-memory filesystem. We use it for /dev because device
+    // nodes should not persist to disk, and the container needs its own private /dev.
+    let dev_path = Path::new("/dev");
+    if !dev_path.exists() {
+        let _ = fs::create_dir_all(dev_path);
+    }
+    if let Err(e) = mount(
+        Some("tmpfs"),
+        dev_path,
+        Some("tmpfs"),
+        MsFlags::MS_NOSUID | MsFlags::MS_STRICTATIME,
+        Some("mode=755,size=65536k"),
+    ) {
+        eprintln!("❌ Failed to mount tmpfs on /dev: {}", e);
+        std::process::exit(1);
+    }
+
+    // Note for the future: A complete runtime would now manually execute mknod()
+    // inside this tmpfs to create /dev/null, /dev/zero, /dev/urandom, etc.
+    // For now, many basic CLI tools will function simply by having the tmpfs exist.
 }
 
