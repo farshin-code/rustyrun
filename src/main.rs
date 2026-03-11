@@ -3,9 +3,11 @@ mod config;
 mod container;
 mod mounts;
 mod namespaces;
+mod network;
 
 use clap::{Parser, Subcommand};
 use config::ContainerConfig;
+use network::Network;
 use std::path::PathBuf;
 
 /// A simple container runtime written in Rust
@@ -47,6 +49,9 @@ enum Commands {
 
         #[arg(long)]
         hostname: String,
+
+        #[arg(long)]
+        veth_guest: String,
     },
     /// Hidden command used internally to be PID 1 in the new namespace
     #[command(hide = true)]
@@ -59,6 +64,9 @@ enum Commands {
 
         #[arg(long)]
         hostname: String,
+
+        #[arg(long)]
+        veth_guest: String,
     },
 }
 
@@ -72,24 +80,30 @@ fn main() {
             hostname,
             memory,
         } => {
-            let config = ContainerConfig::new(rootfs, command, hostname, memory);
+            // Because Network setup happens on the host first, 
+            // the Host generates the names and passes them via config.
+            let network = Network::new();
+            let config = ContainerConfig::new(rootfs, command, hostname, memory, network.veth_guest.clone());
+            
             println!("🚀 Starting rustyrun...");
-            container::start(config);
+            container::start(config, network);
         }
         Commands::Child {
             rootfs,
             command,
             hostname,
+            veth_guest,
         } => {
-            let config = ContainerConfig::new(rootfs, command, hostname, None);
+            let config = ContainerConfig::new(rootfs, command, hostname, None, veth_guest);
             container::child(config);
         }
         Commands::Init {
             rootfs,
             command,
             hostname,
+            veth_guest,
         } => {
-            let config = ContainerConfig::new(rootfs, command, hostname, None);
+            let config = ContainerConfig::new(rootfs, command, hostname, None, veth_guest);
             container::init(config);
         }
     }
