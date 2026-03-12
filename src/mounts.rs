@@ -2,7 +2,55 @@ use nix::mount::{mount, umount2, MntFlags, MsFlags};
 use nix::unistd::pivot_root;
 use std::env::set_current_dir;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// Creates an OverlayFS for the container.
+/// Merges a read-only base image with a temporary writable upper layer,
+/// allowing multiple containers to run from the same rootfs without interfering.
+pub fn setup_overlayfs(base_rootfs: &str, container_id: &str) -> String {
+    let overlay_dir = format!("/tmp/rustyrun-{}", container_id);
+    let upper = format!("{}/upper", overlay_dir);
+    let work = format!("{}/work", overlay_dir);
+    let merged = format!("{}/merged", overlay_dir);
+
+    // Create the temporary directories needed for the overlay
+    fs::create_dir_all(&upper).expect("Failed to create overlay upper directory");
+    fs::create_dir_all(&work).expect("Failed to create overlay work directory");
+    fs::create_dir_all(&merged).expect("Failed to create overlay merged directory");
+
+    let data = format!("lowerdir={},upperdir={},workdir={}", base_rootfs, upper, work);
+
+    // Mount the overlay filesystem
+    if let Err(e) = mount(
+        Some("overlay"),
+        merged.as_str(),
+        Some("overlay"),
+        MsFlags::empty(),
+        Some(data.as_str()),
+    ) {
+        eprintln!("❌ Failed to mount OverlayFS: {}", e);
+        std::process::exit(1);
+    }
+
+    println!("📁 Mounts: Created OverlayFS layer at {}", merged);
+    merged
+}
+
+/// Cleans up the OverlayFS temporary directories from the host.
+pub fn clean_overlayfs(container_id: &str) {
+    let overlay_dir = format!("/tmp/rustyrun-{}", container_id);
+    let merged = format!("{}/merged", overlay_dir);
+    
+    // We attempt to unmount it first if it hasn't automatically died with the namespace
+    let _ = umount2(merged.as_str(), MntFlags::MNT_DETACH);
+    
+    // Remote the entire temp structure
+    if let Err(e) = fs::remove_dir_all(&overlay_dir) {
+        eprintln!("⚠️ Failed to clean up overlay dir {}: {}", overlay_dir, e);
+    } else {
+        println!("🧹 Cleaned up OverlayFS at {}", overlay_dir);
+    }
+}
 
 /// Sets up the container's root filesystem.
 pub fn setup_rootfs(rootfs: &Path) {

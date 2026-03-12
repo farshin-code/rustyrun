@@ -9,7 +9,11 @@ use std::process::Command;
 pub fn start(config: ContainerConfig, network: Network) {
     println!("🚀 Host: Starting container process...");
 
-    // 1. Set up Cgroups for resource limitations
+    // 1. OverlayFS: Merge base image with temporary writable layer
+    // We use the hostname as the unique container ID for the overlay temporary path
+    let merged_rootfs = crate::mounts::setup_overlayfs(&config.rootfs, &config.hostname);
+
+    // 2. Set up Cgroups for resource limitations
     let cgroup = crate::cgroups::Cgroup::new(&config.hostname);
     if let Some(limit_mb) = config.memory_mb {
         cgroup.set_memory_limit(limit_mb);
@@ -20,7 +24,7 @@ pub fn start(config: ContainerConfig, network: Network) {
 
     // Pass the arguments to the `child` subcommand
     child.arg("child");
-    child.arg("--rootfs").arg(&config.rootfs);
+    child.arg("--rootfs").arg(&merged_rootfs); // Pass the new overlay merged path!
     child.arg("--command").arg(&config.command);
     child.arg("--hostname").arg(&config.hostname);
     child.arg("--veth-guest").arg(&config.veth_guest);
@@ -62,9 +66,10 @@ pub fn start(config: ContainerConfig, network: Network) {
 
     let status = process.wait().expect("❌ Failed to wait on child process");
 
-    // 2. Clean up Cgroups & Network
+    // 4. Clean up Resources (Cgroups, Network, and OverlayFS)
     cgroup.clean();
     network.clean();
+    crate::mounts::clean_overlayfs(&config.hostname);
 
     println!("🛑 Host: Container exited with status: {}", status);
 }
